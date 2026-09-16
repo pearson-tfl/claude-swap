@@ -237,6 +237,81 @@ def _guard_root(switcher: ClaudeAccountSwitcher) -> None:
             sys.exit(1)
 
 
+def _whoami_command(argv: list[str]) -> None:
+    """Handle `cswap whoami [--json] [--verify]`.
+
+    Fork fixes D3/D2. A profile records its account twice — in
+    ``.claude.json``, written by Claude Code at ``/login``, and in the
+    credential the profile presents. Each read on its own is correct, so a
+    disagreement between them is silent, and every consumer of the wrong one
+    inherits it. Nothing in cswap answered "do these two agree?", which is why
+    an agent could not reliably read its own account.
+
+    Offline by default: the attribution compares refresh-token fingerprints
+    against the backups cswap already holds, which is proof rather than
+    inference. ``--verify`` adds a profile probe for a credential that matches
+    no stored backup, and only for that case — a fingerprint match is already
+    proof, and re-asking the server would let a network failure downgrade it.
+
+    Prints emails and profile metadata only. No token, no fingerprint and no
+    file bytes, so the output is safe in a log or a ticket.
+    """
+    parser = argparse.ArgumentParser(
+        prog=f"{_prog_name()} whoami",
+        description=(
+            "Report which account this profile is on, from both of its "
+            "sources, and whether they agree."
+        ),
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Machine-readable output"
+    )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Ask the server to resolve a credential cswap cannot attribute",
+    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    args = parser.parse_args(argv)
+
+    from claude_swap import identity
+
+    try:
+        switcher = ClaudeAccountSwitcher(debug=args.debug)
+        _guard_root(switcher)
+        result = identity.read_profile_account(switcher, verify=args.verify)
+    except ClaudeSwitchError as e:
+        error(f"Error: {e}")
+        sys.exit(1)
+
+    if args.json:
+        print(json.dumps(result.to_json(), indent=2))
+        # Exit 1 on a PROVEN disagreement so a script can branch without
+        # parsing prose. Every other verdict is honest ignorance and exits 0:
+        # a caller must not treat "could not tell" as a fault.
+        sys.exit(1 if result.verdict == identity.Verdict.DISAGREE else 0)
+
+    print(f"{bolded('Profile')}  {result.config_dir}  {dimmed('(' + result.config_dir_source + ')')}")
+    if result.keychain_service:
+        print(f"{bolded('Keychain')} {result.keychain_service}")
+    print(f"{bolded('Config')}   {result.config_email or dimmed('(none)')}")
+    if result.credential_email:
+        print(
+            f"{bolded('Credential')} {result.credential_email} "
+            f"{dimmed('(cswap slot ' + (result.credential_slot or '?') + ')')}"
+        )
+    elif result.resolved_email:
+        print(f"{bolded('Credential')} {result.resolved_email} {dimmed('(resolved)')}")
+
+    if result.verdict == identity.Verdict.AGREE:
+        print(f"\n{accent('agree')} {result.detail}")
+        return
+    if result.verdict == identity.Verdict.DISAGREE:
+        warning(f"\ndisagree: {result.detail}")
+        sys.exit(1)
+    print(f"\n{muted(result.verdict)} {result.detail}")
+
+
 def _map_command(argv: list[str]) -> None:
     """Handle `cswap map [NUM|EMAIL] [PATH]`.
 
@@ -1008,6 +1083,9 @@ def main() -> None:
     if argv and argv[0] == "unclaimed":
         _unclaimed_command(argv[1:])
         return
+    if argv and argv[0] == "whoami":
+        _whoami_command(argv[1:])
+        return
     if argv and argv[0] == "alias":
         _alias_command(argv[1:])
         return
@@ -1038,6 +1116,7 @@ Commands:
   %(prog)s help                       show this help
   %(prog)s list                       list managed accounts
   %(prog)s status                     show current account
+  %(prog)s whoami [--json] [--verify] which account this profile is really on
   %(prog)s switch                     rotate to the next account
   %(prog)s switch <num|email>         switch to a specific account
   %(prog)s add                        add the current account

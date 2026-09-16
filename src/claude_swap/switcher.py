@@ -84,7 +84,7 @@ from claude_swap.paths import (
     migrate_legacy_backup_dir,
 )
 from claude_swap.process_detection import get_running_instances
-from claude_swap import poll_policy
+from claude_swap import identity, poll_policy
 from claude_swap.settings import load_settings, parse_model_names, settings_path
 from claude_swap.usage_store import (
     FetchRecord,
@@ -5507,6 +5507,14 @@ class ClaudeAccountSwitcher:
         lockstep_warnings = self._lockstep_usage_warnings(accounts_info, entries)
         if lockstep_warnings:
             payload["lockstepUsageWarnings"] = lockstep_warnings
+        # Fork fixes D3/D2: the active slot is NAMED from `.claude.json` while
+        # its credential comes from the profile's Keychain item, and the two can
+        # disagree. Offline, and from rows already read, so the path CodexBar
+        # polls gains no request and no read. Additive like its two neighbours
+        # above: the schemaVersion 1 payload is unchanged when nothing is wrong.
+        identity_warnings = identity.active_slot_warnings(accounts_info)
+        if identity_warnings:
+            payload["profileIdentityWarnings"] = identity_warnings
         unclaimed = self._store._list_unclaimed_credentials()
         if unclaimed:
             payload["unclaimedCredentials"] = sorted(unclaimed)
@@ -5572,11 +5580,14 @@ class ClaudeAccountSwitcher:
         # in the JSON payload and logs for diagnostics.
         dup_warnings = self._duplicate_account_warnings(accounts_info)
         lockstep_warnings = self._lockstep_usage_warnings(accounts_info, entries)
-        if dup_warnings or lockstep_warnings:
+        identity_warnings = identity.active_slot_warnings(accounts_info)
+        if dup_warnings or lockstep_warnings or identity_warnings:
             print()
             for msg in dup_warnings:
                 warning(msg)
             for msg in lockstep_warnings:
+                warning(msg)
+            for msg in identity_warnings:
                 warning(msg)
 
         # Running instances
