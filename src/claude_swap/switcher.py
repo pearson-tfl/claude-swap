@@ -34,6 +34,7 @@ from claude_swap.json_output import (
     USAGE_KEYCHAIN_UNAVAILABLE,
     USAGE_NO_CREDENTIALS,
     USAGE_RELOGIN_REQUIRED,
+    USAGE_STORED_CREDENTIAL_STALE,
     USAGE_TOKEN_EXPIRED,
     account_ref,
     account_row,
@@ -196,12 +197,31 @@ ERROR_NOTES = {
     ),
 }
 
+# Which stored source carried the struck refresh-token generation. Internal to
+# the dead-verdict path; each maps to exactly one displayed sentinel below.
+DEAD_LIVE = "live"  # the credential actually in use is dead — the user must act
+DEAD_STORED_ONLY = "stored_only"  # only cswap's backup is dead; account unproven
+DEAD_UNPROVEN = "unproven"  # struck, but the second source cannot be read
+
+# A quarantined slot's displayed state, by which source died. The account is
+# not fetched in any of the three, but only DEAD_LIVE proves a re-login is
+# needed; the other two mean "cswap cannot measure this", which must never be
+# dressed up as "the account is finished" (#1381 D5).
+DEAD_REASON_SENTINELS = {
+    DEAD_LIVE: USAGE_RELOGIN_REQUIRED,
+    DEAD_STORED_ONLY: USAGE_STORED_CREDENTIAL_STALE,
+    # An unreadable second source is the existing "cannot tell" state, and it
+    # already carries the right remedy: retry from a GUI session.
+    DEAD_UNPROVEN: USAGE_KEYCHAIN_UNAVAILABLE,
+}
+
 SENTINEL_NOTES = {
     USAGE_TOKEN_EXPIRED: "token expired — refresh deferred this pass; retries automatically",
     USAGE_FOREIGN_CREDENTIAL: "live credential belongs to another account — a switch repairs it",
     USAGE_API_KEY: "API key (no quota)",
     USAGE_KEYCHAIN_UNAVAILABLE: "keychain unavailable — locked or in use; try again",
     USAGE_RELOGIN_REQUIRED: "re-login needed — refresh token dead; log in with Claude Code, then run: cswap add",
+    USAGE_STORED_CREDENTIAL_STALE: "cswap's stored credential is stale — account not proven expired; re-attribute with: cswap add",
 }
 
 
@@ -4993,8 +5013,9 @@ class ClaudeAccountSwitcher:
                 continue
             entry = entries[num]
             _i = info_by_num[num]
-            if self._entry_token_dead(entry, num, _i[1], _i[5], _i[4]):
-                sentinels[num] = USAGE_RELOGIN_REQUIRED
+            reason = self._token_dead_reason(entry, num, _i[1], _i[5], _i[4])
+            if reason is not None:
+                sentinels[num] = DEAD_REASON_SENTINELS[reason]
             elif entry.auth_dead_strikes and entry.token_dead():
                 # Struck, but no stored source still matches the condemned
                 # generation — the fingerprint healed the verdict.
@@ -5066,10 +5087,11 @@ class ClaudeAccountSwitcher:
             # slot looking merely refresh-failed until the next refresh notices.
             for num in accepted:
                 _i = info_by_num[num]
-                if self._entry_token_dead(
+                reason = self._token_dead_reason(
                     entries[num], num, _i[1], _i[5], _i[4]
-                ):
-                    sentinels[num] = USAGE_RELOGIN_REQUIRED
+                )
+                if reason is not None:
+                    sentinels[num] = DEAD_REASON_SENTINELS[reason]
 
         return {
             num: with_sentinel(entries[num], sentinels.get(num))
@@ -5141,7 +5163,27 @@ class ClaudeAccountSwitcher:
         stored: str,
         is_active: bool,
     ) -> bool:
-        """Fingerprint-bound dead verdict against EVERY stored source.
+        """Whether this slot is quarantined as refresh-token-dead.
+
+        Quarantine only — "do not POST this grant again". It deliberately does
+        NOT say the user must log in again; :meth:`_token_dead_reason` answers
+        which source died, and the display reads that. Defined in terms of the
+        reason so the two can never drift apart: every branch that quarantines
+        also names a cause, and every branch that names one quarantines.
+        """
+        return self._token_dead_reason(entry, num, email, stored, is_active) is not None
+
+    def _token_dead_reason(
+        self,
+        entry: UsageEntry,
+        num: str,
+        email: str,
+        stored: str,
+        is_active: bool,
+    ) -> str | None:
+        """WHICH stored source carried the struck generation, or None.
+
+        Fingerprint-bound dead verdict against EVERY stored source.
 
         For an idle slot ``info[5]`` is the backup, the only source a strike
         can bind to. The ACTIVE slot has two stored sources — ``info[5]`` is
@@ -5151,11 +5193,22 @@ class ClaudeAccountSwitcher:
         every pass whenever the two lineages differ — the strike/heal/re-POST
         loop that keeps a dead backup out of quarantine forever. The strike
         holds while ANY stored source still matches the struck generation.
+
+        The three answers are the point (#1381 D5). Upstream collapses them
+        onto one "re-login needed", so an account whose only fault is that
+        cswap's backup went stale — a profile re-logged outside cswap — is
+        reported as locked out, and the estate steers work away from the
+        account with the most headroom. ``DEAD_LIVE`` is the only one that
+        proves the user must act.
         """
         if entry.token_dead(stored_fp=oauth.credential_fingerprint(stored)):
-            return True
+            # For the ACTIVE slot ``stored`` is the live credential, so this
+            # is proof the credential in use is dead. For an IDLE slot it is
+            # only cswap's backup, and cswap cannot see whatever credential
+            # that account's own profile may hold.
+            return DEAD_LIVE if is_active else DEAD_STORED_ONLY
         if not is_active:
-            return False
+            return None
         backup, unreadable = self._read_account_credentials_ex(num, email)
         if unreadable:
             # The second source cannot be seen, so "no stored source matches
@@ -5175,10 +5228,15 @@ class ClaudeAccountSwitcher:
             # carry the struck generation, so a row with zero strikes has
             # nothing to hold — an unreadable backup on an otherwise-healthy
             # account must not manufacture "re-login needed" out of nothing.
-            return entry.token_dead()
-        return bool(backup) and entry.token_dead(
+            return DEAD_UNPROVEN if entry.token_dead() else None
+        if backup and entry.token_dead(
             stored_fp=oauth.credential_fingerprint(backup)
-        )
+        ):
+            # The live credential did NOT carry the struck generation (checked
+            # first, above); only cswap's backup did. Nothing here shows the
+            # account is expired.
+            return DEAD_STORED_ONLY
+        return None
 
     def _plans_after_fetch(
         self,

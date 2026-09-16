@@ -4225,7 +4225,7 @@ class TestDeadTokenQuarantine:
         store.record({num: FetchRecord(error="invalid_grant")}, {num: identity})
 
     def test_collector_surfaces_relogin_sentinel_and_skips_fetch(self, temp_home):
-        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+        from claude_swap.json_output import USAGE_STORED_CREDENTIAL_STALE
         switcher = ClaudeAccountSwitcher()
         switcher._setup_directories()
         self._make_dead(switcher)
@@ -4234,14 +4234,17 @@ class TestDeadTokenQuarantine:
         with patch("claude_swap.oauth.try_fetch_usage_for_account") as fetch:
             entries = switcher._collect_usage_entries(info)
 
-        assert entries["2"].sentinel == USAGE_RELOGIN_REQUIRED
+        # IDLE slot: the struck generation is cswap's own BACKUP, so the
+        # account is not proven expired (#1381 D5). Quarantine is unchanged —
+        # that is what this test guards — only the reported state is honest.
+        assert entries["2"].sentinel == USAGE_STORED_CREDENTIAL_STALE
         fetch.assert_not_called()  # quarantined: no endless 401/429 loop
 
     def test_relogin_surfaces_same_pass_on_invalid_grant(self, temp_home):
         # A fetch that returns invalid_grant crosses the dead threshold this pass;
         # the pre-fetch quarantine scan couldn't see it, so the collector must
         # still render "re-login needed" now, not only on the next refresh.
-        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+        from claude_swap.json_output import USAGE_STORED_CREDENTIAL_STALE
         from claude_swap.usage_store import FetchRecord
         switcher = ClaudeAccountSwitcher()
         switcher._setup_directories()
@@ -4254,7 +4257,9 @@ class TestDeadTokenQuarantine:
             entries = switcher._collect_usage_entries(info)
 
         run.assert_called_once()  # it was fetch-eligible, not pre-quarantined
-        assert entries["2"].sentinel == USAGE_RELOGIN_REQUIRED
+        # Same pass, and still an IDLE slot: stale backup, not a locked-out
+        # account (#1381 D5).
+        assert entries["2"].sentinel == USAGE_STORED_CREDENTIAL_STALE
 
     def test_the_collector_hands_the_trust_bound_its_configured_models(
         self, temp_home
@@ -10119,7 +10124,9 @@ class TestStrikeUnbindsInCollector:
         self, temp_home: Path, mock_claude_config: Path,
         sample_sequence_data: dict, monkeypatch
     ):
-        from claude_swap.json_output import USAGE_RELOGIN_REQUIRED
+        from claude_swap.json_output import (
+            USAGE_RELOGIN_REQUIRED, USAGE_STORED_CREDENTIAL_STALE,
+        )
         from claude_swap.usage_store import FetchRecord as StoreRecord
         sample_sequence_data["accounts"]["2"] = {
             "email": "b@example.com", "uuid": "u2",
@@ -10143,7 +10150,8 @@ class TestStrikeUnbindsInCollector:
         )
         info = [(2, "b@example.com", "", "", False, dead, "")]
         entries = s._collect_usage_entries(info, fetch=set())
-        assert entries["2"].sentinel == USAGE_RELOGIN_REQUIRED
+        # IDLE slot, so the struck generation is the backup's (#1381 D5).
+        assert entries["2"].sentinel == USAGE_STORED_CREDENTIAL_STALE
         # replace the credential (fresh lineage) — quarantine must lift
         fresh = json.dumps({
             "claudeAiOauth": {"accessToken": "b", "refreshToken": "rt-new",
@@ -10151,7 +10159,11 @@ class TestStrikeUnbindsInCollector:
         s._write_account_credentials("2", "b@example.com", fresh)
         info = [(2, "b@example.com", "", "", False, fresh, "")]
         entries = s._collect_usage_entries(info, fetch=set())
-        assert entries["2"].sentinel != USAGE_RELOGIN_REQUIRED
+        # Stronger than "not re-login": the strike must not survive under ANY
+        # of the quarantine states, or the lift is cosmetic.
+        assert entries["2"].sentinel not in (
+            USAGE_RELOGIN_REQUIRED, USAGE_STORED_CREDENTIAL_STALE,
+        )
 
 
 class TestStoreResolutionParity:

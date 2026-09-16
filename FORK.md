@@ -133,6 +133,56 @@ Files: `src/claude_swap/autoswitch.py`,
 `tests/test_fork_autoswitch_per_config_dir.py`, plus a scoped read helper in
 `tests/test_autoswitch.py` for assertions about a persisted switch.
 
+### D5 — a dead stored copy was reported as a dead account
+
+Found on this estate, 16 September 2026, and not in the original four. `cswap
+--list --json` reported slot 4 (`bbconsult@jeptech.co.uk`) as
+`usageStatus: relogin_required` with both usage figures null, while the account
+was live, correctly attributed (`cswap whoami --verify` → `agree`) and the
+LEAST used of the four. Agents read the list, believed the account with the
+most headroom was unusable, and steered work onto nearly-exhausted accounts.
+
+cswap quarantines a slot after `invalid_grant` and reported every quarantine as
+"re-login needed". The credential that failed, though, is whichever copy cswap
+POSTed. For an **idle** slot that is cswap's own backup — and cswap has no view
+of the credential that account's profile may actually hold. A profile re-logged
+outside cswap leaves exactly this state: the backup holds a spent generation,
+the account is untouched.
+
+So "I cannot measure this account" was being reported as "the user is locked
+out". Three states now, not two:
+
+| what cswap proved | state |
+|---|---|
+| the credential in use is dead (active slot) | `relogin_required` |
+| only cswap's stored copy is dead | `stored_credential_stale` (new) |
+| struck, but the second source cannot be read | `keychain_unavailable` |
+
+`_entry_token_dead` keeps its exact boolean meaning and is now defined as
+"`_token_dead_reason` named a cause", so the quarantine decision and the
+displayed state cannot drift apart. **No fetch behaviour changes**: a
+quarantined slot is still not polled in any of the three states, which is the
+property the existing tests guard and they still guard it.
+
+`AUTH_DEAD_STRIKES` is 1, so a single `invalid_grant` reaches this display.
+That threshold is untouched here — it is upstream's and a separate argument.
+
+Three existing assertions in `tests/test_switcher.py` expected
+`relogin_required` on an **idle** slot with a struck backup. That is the defect
+itself, so they now expect `stored_credential_stale`; every other assertion in
+those tests, including the `fetch.assert_not_called()` quarantine checks they
+exist for, is unchanged. One was strengthened: the quarantine-lift test
+asserted only "not re-login", which the new state would have satisfied
+vacuously, and now asserts the strike survives under neither state.
+
+**CodexBar contract.** `schemaVersion` stays 1. `usageStatus` gains one value.
+A consumer switching on the old set sees an unknown string rather than a wrong
+one; `SENTINEL_NOTES` lookups already fall back to the raw value, so no display
+path can raise on it.
+
+Files: `src/claude_swap/json_output.py`, `src/claude_swap/switcher.py`,
+`tests/test_fork_stored_credential_stale.py`, `tests/test_switcher.py`.
+
 ## What this fork deliberately does not do
 
 **It does not port upstream PR #280, the Keychain trusted-app ACL pin.**

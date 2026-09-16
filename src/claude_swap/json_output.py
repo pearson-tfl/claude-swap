@@ -27,11 +27,27 @@ USAGE_API_KEY = "api key"
 # with no plaintext fallback — distinct from a genuinely empty slot, so the user
 # isn't misled into an unnecessary re-login.
 USAGE_KEYCHAIN_UNAVAILABLE = "keychain unavailable"
-# The stored refresh-token lineage is dead (repeated ``invalid_grant``). The
-# account is quarantined from fetching until a re-login (``cswap login`` / ``add``)
-# replaces the credential; distinct from "token expired" (which Claude Code can
-# refresh on its own) because only the user can fix it.
+# The LIVE credential this profile presents carries the dead refresh-token
+# lineage (repeated ``invalid_grant``). The account is quarantined from fetching
+# until a re-login (``cswap login`` / ``add``) replaces the credential; distinct
+# from "token expired" (which Claude Code can refresh on its own) because only
+# the user can fix it.
+#
+# Reserved for the case cswap can PROVE: the credential that failed is the one
+# in use. When only cswap's own stored backup carries the struck generation, the
+# account may be perfectly live under a credential cswap has never captured —
+# that is ``USAGE_STORED_CREDENTIAL_STALE``, not this.
 USAGE_RELOGIN_REQUIRED = "re-login needed"
+# cswap's own STORED copy of this account's credential is dead, and the live
+# credential was not the thing that failed. A profile re-logged outside cswap
+# leaves exactly this state: the backup holds a spent generation, the account
+# itself is untouched and may be the healthiest one on the machine.
+#
+# The remedy is re-attribution (``cswap add``), not necessarily a fresh login,
+# and the quota is unknown rather than zero. Quarantine still applies — cswap
+# has no credential it can fetch with — but "I cannot measure this" must not be
+# reported as "the user is locked out" (#1381 D5).
+USAGE_STORED_CREDENTIAL_STALE = "stored credential stale"
 # The profile oracle proved the live credential belongs to a DIFFERENT account
 # than the slot's identity (foreign credential under a stale config — partial
 # cross-machine sync or a mid-``/login`` poll). Its quota is not this slot's, so
@@ -144,6 +160,8 @@ def usage_fields(
     session may renew), the ``USAGE_API_KEY`` sentinel
     (managed API-key account, no subscription quota), the
     ``USAGE_KEYCHAIN_UNAVAILABLE`` sentinel (active Keychain unreadable), the
+    ``USAGE_STORED_CREDENTIAL_STALE`` sentinel (cswap's stored copy is dead but
+    the live credential never failed — quota unknown, not exhausted), the
     ``USAGE_FOREIGN_CREDENTIAL`` sentinel (live credential proven to belong to
     another account; usage suppressed, a switch repairs the drift), the
     ``USAGE_NO_CREDENTIALS`` sentinel, or ``None`` (fetch failed). ``fetched_at``
@@ -159,6 +177,8 @@ def usage_fields(
         return "keychain_unavailable", None
     if entry == USAGE_RELOGIN_REQUIRED:
         return "relogin_required", None
+    if entry == USAGE_STORED_CREDENTIAL_STALE:
+        return "stored_credential_stale", None
     if entry == USAGE_FOREIGN_CREDENTIAL:
         return "foreign_credential", None
     if isinstance(entry, str):
