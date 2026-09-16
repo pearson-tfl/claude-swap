@@ -33,6 +33,7 @@ import enum
 import json
 import logging
 import math
+import os
 import random
 import threading
 import time
@@ -46,6 +47,10 @@ from claude_swap import oauth, poll_policy
 from claude_swap.exceptions import ClaudeSwitchError
 from claude_swap.json_output import SCHEMA_VERSION, USAGE_TOKEN_EXPIRED
 from claude_swap.locking import FileLock
+from claude_swap.paths import (
+    get_claude_config_home,
+    get_default_claude_config_home,
+)
 from claude_swap.poll_policy import (
     ESCALATION_MARGIN_PCT,
     RESET_SLACK_S,
@@ -57,6 +62,106 @@ from claude_swap.usage_store import due_candidate, plan_oversleeps_interval
 
 STATE_FILENAME = "autoswitch_state.json"
 STATE_SCHEMA_VERSION = 1
+
+# -- switch history, scoped per config dir (fork fix D4, upstream #253) -------
+#
+# These six keys describe the switch ONE live config made. Held at the top
+# level of the shared state file they are read by every engine as its own, so
+# two `cswap auto` engines under different CLAUDE_CONFIG_DIR profiles suppress
+# each other's cooldown, inherit each other's no-return bar, and overwrite the
+# departure snapshot the bar's release diffs against. They move under
+# `perConfigDir[<normalised config home>]`.
+#
+# Quarantine is deliberately NOT here: it is a fact about an ACCOUNT (a dead
+# refresh-token lineage is dead in every profile), so it stays top-level and
+# shared. Poll plans live in the usage store and are untouched.
+#
+# No schema bump. The read path honours a pre-upgrade record's top-level keys
+# until the first post-upgrade switch retires them, and an older cswap reading
+# the new file finds the keys absent and lands in its existing
+# absence-releases paths. The file's own precedent: `leftHeadroom` and
+# `leftTrigger` were themselves added later with per-field absence fallbacks.
+SWITCH_HISTORY_KEYS = (
+    "lastSwitchAt",
+    "lastSwitchTo",
+    "lastSwitchFrom",
+    "leftHeadroom",
+    "leftRecoveryAt",
+    "leftTrigger",
+)
+PER_CONFIG_DIR_KEY = "perConfigDir"
+
+
+def config_dir_key(config_home: Path | None = None) -> str:
+    """The slice key for a config home — one key per profile, however spelled.
+
+    `realpath` collapses a trailing separator and resolves symlinks, so the
+    spellings a user actually exports (`~/.claude-blueberry`,
+    `~/.claude-blueberry/`, a symlink to it) name one slice. Two keys for one
+    profile would give that engine two partial histories and neither the whole
+    truth — the same anti-flap bound silently halved.
+
+    An unresolvable path keeps its literal spelling rather than raising: this
+    runs inside a tick, and a history read must degrade, never throw.
+    """
+    home = config_home if config_home is not None else get_claude_config_home()
+    try:
+        return os.path.realpath(home)
+    except OSError:
+        return str(home)
+
+
+def switch_history(state: dict) -> dict:
+    """This engine's switch-history slice.
+
+    Its own slice when one exists, else the top-level cluster a pre-upgrade
+    cswap wrote. The fallback is the downgrade path and it is deliberately the
+    conservative one: ignoring an unattributed record would drop the anti-flap
+    bar for a whole upgrade cycle, and this history's readers always prefer
+    holding a bar that may not be theirs to dropping one that is.
+
+    A wrong shape anywhere reads as "no history" rather than raising — the
+    state file is already rebuilt from nothing when it is unreadable, so a
+    corrupt shape inside it must degrade the same way.
+    """
+    slices = state.get(PER_CONFIG_DIR_KEY)
+    if isinstance(slices, dict):
+        own = slices.get(config_dir_key())
+        if isinstance(own, dict):
+            return own
+        if own is not None:
+            return {}
+    return {k: state[k] for k in SWITCH_HISTORY_KEYS if k in state}
+
+
+def record_switch_history(state: dict, record: dict) -> None:
+    """Replace this engine's slice, retiring any pre-upgrade top-level record.
+
+    A switch has always overwritten the whole cluster, so an engine retiring
+    its OWN record loses nothing. An unattributed record retired by a
+    DIFFERENT profile's engine moves into the default profile's slice instead
+    of vanishing: pre-upgrade autoswitch ran the default profile in the common
+    case, so that is where the record most likely belongs.
+
+    The move never overwrites an existing default slice. That slice is the
+    default profile's engine speaking for itself — a measurement — and an
+    unattributed record is a guess.
+    """
+    slices = state.get(PER_CONFIG_DIR_KEY)
+    if not isinstance(slices, dict):
+        slices = {}
+        state[PER_CONFIG_DIR_KEY] = slices
+
+    legacy = {k: state[k] for k in SWITCH_HISTORY_KEYS if k in state}
+    if legacy:
+        own_key = config_dir_key()
+        default_key = config_dir_key(get_default_claude_config_home())
+        if own_key != default_key and default_key not in slices:
+            slices[default_key] = legacy
+        for key in SWITCH_HISTORY_KEYS:
+            state.pop(key, None)
+
+    slices[config_dir_key()] = dict(record)
 
 _logger = logging.getLogger("claude-swap")
 
@@ -1466,7 +1571,8 @@ class AutoSwitchEngine:
         ranking cannot answer: is this a different account from the one we
         left, or only a different active?
         """
-        came_from = state.get("lastSwitchFrom")
+        history = switch_history(state)
+        came_from = history.get("lastSwitchFrom")
         if trigger not in ("proactive", "consume-first") or came_from is None:
             return None
         # Only while we are still standing where that switch put us. A manual
@@ -1475,7 +1581,7 @@ class AutoSwitchEngine:
         # `_perform`'s `number: str`, `lastSwitchFrom` from `account_ref`'s
         # `number: int`, and an int/str mismatch here would disarm the bar
         # everywhere rather than only after a hand switch.
-        landed_on = state.get("lastSwitchTo")
+        landed_on = history.get("lastSwitchTo")
         if landed_on is not None and current is not None:
             if str(landed_on) != str(current):
                 return None
@@ -1609,7 +1715,8 @@ class AutoSwitchEngine:
         escapes the account untouched, and the next successful switch
         overwrites the snapshot outright.
         """
-        came_from = state.get("lastSwitchFrom")
+        history = switch_history(state)
+        came_from = history.get("lastSwitchFrom")
         if came_from is None:
             # Unreachable through `_no_return_account`, the only caller: it
             # returns `None` at its own `came_from is None` check before
@@ -1618,11 +1725,11 @@ class AutoSwitchEngine:
             # silent hold.
             return True
         barred = str(came_from)
-        if "leftHeadroom" not in state:
+        if "leftHeadroom" not in history:
             return True          # pre-upgrade record: genuinely no evidence
         h = headroom.get(barred)
-        left_headroom = state.get("leftHeadroom")
-        left_recovery = state.get("leftRecoveryAt")
+        left_headroom = history.get("leftHeadroom")
+        left_recovery = history.get("leftRecoveryAt")
         # A `consume-first` departure can ALSO write (None, None) -- the
         # same shape a real failover writes -- whenever the phase-2 refetch's
         # active row is unmeasurable for headroom but still has a known
@@ -1636,7 +1743,7 @@ class AutoSwitchEngine:
         # this field existed has no such key, so fall back to the old
         # two-null inference for it (unchanged behaviour for pre-upgrade
         # state).
-        left_trigger = state.get("leftTrigger")
+        left_trigger = history.get("leftTrigger")
         is_failover_snapshot = (
             left_trigger == "failover"
             if left_trigger is not None
@@ -2139,17 +2246,18 @@ class AutoSwitchEngine:
                 return TickOutcome.NO_ACTION
 
             state["schemaVersion"] = STATE_SCHEMA_VERSION
-            state["lastSwitchAt"] = self.clock()
-            state["lastSwitchTo"] = number
+            record: dict = {}
+            record["lastSwitchAt"] = self.clock()
+            record["lastSwitchTo"] = number
             # WHERE we came from, so the next tick can refuse to undo this,
             # and WHAT IT LOOKED LIKE, so that refusal has a release that burn
             # cannot fake. See `_left_account_recovered` for why the present
             # state alone cannot supply one. `inf` is stored as null: it is not
             # portable JSON, and every other reader of this file would have to
             # learn about it.
-            state["lastSwitchFrom"] = (result.get("from") or {}).get("number")
-            state["leftHeadroom"], recovery = left
-            state["leftRecoveryAt"] = None if recovery == float("inf") else recovery
+            record["lastSwitchFrom"] = (result.get("from") or {}).get("number")
+            record["leftHeadroom"], recovery = left
+            record["leftRecoveryAt"] = None if recovery == float("inf") else recovery
             # A `consume-first` phase-2 refetch can write the SAME (None,
             # None) shape a `failover` departure writes, whenever the
             # refetched active row has a `pct` but is otherwise unmeasurable
@@ -2158,7 +2266,11 @@ class AutoSwitchEngine:
             # needs only `resets_at`. Inferring the trigger from the two
             # nulls then runs the wrong legs. Record it directly so the
             # reader never has to guess.
-            state["leftTrigger"] = trigger
+            record["leftTrigger"] = trigger
+            # Under THIS profile's key, so a concurrent engine on another
+            # profile owes this switch no backoff and inherits none of its
+            # anti-flap baselines.
+            record_switch_history(state, record)
             atomic_write_json(self.state_path, state)
 
         self._emit(
@@ -2174,7 +2286,7 @@ class AutoSwitchEngine:
     # -- helpers --------------------------------------------------------------
 
     def _in_cooldown(self, state: dict) -> bool:
-        last = state.get("lastSwitchAt")
+        last = switch_history(state).get("lastSwitchAt")
         if not isinstance(last, (int, float)):
             return False
         return (self.clock() - last) < self.settings.cooldown_seconds

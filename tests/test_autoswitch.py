@@ -29,6 +29,8 @@ from claude_swap.autoswitch import (
     UnquarantineEvent,
     _recovery_is_useful,
     pct_label,
+    config_dir_key,
+    switch_history,
 )
 from claude_swap.json_output import USAGE_FOREIGN_CREDENTIAL, USAGE_TOKEN_EXPIRED
 from claude_swap.usage_store import FetchRecord, UsageEntry
@@ -73,6 +75,29 @@ def _entry_for(value: dict | str | None, now: float) -> UsageEntry:
     if isinstance(value, str):
         return UsageEntry(sentinel=value)
     return UsageEntry()
+
+
+
+def _history(state: dict) -> dict:
+    """The switch-history slice this config dir owns (fork fix D4, upstream #253).
+
+    The six switch-history keys moved under ``perConfigDir[<config home>]`` so
+    two engines on different profiles stop reading each other's history as
+    their own. Assertions about a PERSISTED switch read through here; the many
+    tests that hand a gate a literal top-level dict are left as they were and
+    now double as coverage of the pre-upgrade fallback.
+    """
+    return switch_history(state)
+
+
+def _mutate_history(engine, fn) -> None:
+    """Apply ``fn`` to this engine's persisted switch-history slice, in place."""
+
+    def _apply(state: dict) -> None:
+        slices = state.setdefault("perConfigDir", {})
+        fn(slices.setdefault(config_dir_key(), {}))
+
+    engine._mutate_state(_apply)
 
 
 class EngineHarness:
@@ -324,7 +349,7 @@ class TestDecisionTable:
         switch = next(e for e in harness.events if isinstance(e, SwitchEvent))
         assert switch.trigger == "proactive"
         assert switch.to_ref == {"number": 3, "email": "c@example.com"}
-        assert harness.state()["lastSwitchTo"] == "3"
+        assert _history(harness.state())["lastSwitchTo"] == "3"
 
     def test_no_active_account(self, temp_home):
         h = EngineHarness(temp_home)
@@ -3335,7 +3360,7 @@ class TestConsumeFirstDepartureRecordsItsOwnTrigger:
             "2": _usage7(10, 10, _R_SOON),
         })
         assert out is TickOutcome.SWITCHED
-        state = h.engine._read_state()
+        state = _history(h.engine._read_state())
         assert state.get("leftTrigger") == "consume-first", (
             f"expected leftTrigger='consume-first', got {state.get('leftTrigger')!r}"
         )
@@ -3352,7 +3377,7 @@ class TestConsumeFirstDepartureRecordsItsOwnTrigger:
             out = h.tick_with_usage({"1": None, "2": _usage(4)})
             h.clock.advance(60.0)
         assert out is TickOutcome.SWITCHED
-        state = h.engine._read_state()
+        state = _history(h.engine._read_state())
         assert state.get("leftTrigger") == "failover", (
             f"expected leftTrigger='failover', got {state.get('leftTrigger')!r}"
         )
@@ -4575,14 +4600,15 @@ class TestHorizonAxisDoesNotFlap:
             "3": _usage(92, back["3"]),
         }) is TickOutcome.SWITCHED
         assert h.active_number() == 2
-        state = h.engine._read_state()
+        state = _history(h.engine._read_state())
         assert state["lastSwitchFrom"] == 1 and state["lastSwitchTo"] == "2", (
             f"premise: production writes an int `from` and a str `to` — got "
             f"{state.get('lastSwitchFrom')!r} / {state.get('lastSwitchTo')!r}"
         )
-        h.engine._mutate_state(
+        _mutate_history(
+            h.engine,
             lambda st: st.pop("lastSwitchTo", None) if landed is None
-            else st.__setitem__("lastSwitchTo", landed)
+            else st.__setitem__("lastSwitchTo", landed),
         )
         if live != 2:
             h.make_live("c@example.com", 3)   # the user switches BY HAND
@@ -4837,7 +4863,7 @@ class TestHorizonAxisDoesNotFlap:
             "3": _usage(99, self._days_out(h, 300)),
         }) is TickOutcome.SWITCHED
         h.clock.advance(301.0)
-        h.engine._mutate_state(lambda st: st.pop("lastSwitchFrom", None))
+        _mutate_history(h.engine, lambda st: st.pop("lastSwitchFrom", None))
 
         assert h.tick_with_usage({
             "1": _usage(96.5, self._days_out(h, 10)),
@@ -4890,7 +4916,7 @@ class TestHorizonAxisDoesNotFlap:
         }) is TickOutcome.SWITCHED
         assert h.active_number() == 2
         h.clock.advance(301.0)
-        assert h.engine._read_state().get("lastSwitchFrom") is not None, (
+        assert _history(h.engine._read_state()).get("lastSwitchFrom") is not None, (
             "premise: the move recorded what it left"
         )
 
@@ -4912,7 +4938,7 @@ class TestHorizonAxisDoesNotFlap:
         # ahead of the active by the same margins.
         h.make_live("b@example.com", 2)
         h.clock.advance(301.0)
-        h.engine._mutate_state(lambda st: st.pop("lastSwitchFrom", None))
+        _mutate_history(h.engine, lambda st: st.pop("lastSwitchFrom", None))
         assert h.tick_with_usage(second) is TickOutcome.SWITCHED
         assert h.active_number() == 1, (
             "premise: unbarred, the account we left returns soonest and IS the "
@@ -5063,7 +5089,7 @@ class TestHorizonAxisDoesNotFlap:
             "2": _usage7(0.0, 0.0, self._days_out(h, 100)),
         }) is TickOutcome.SWITCHED
         assert h.active_number() == 2
-        assert h.engine._read_state().get("leftHeadroom") == 100.0, (
+        assert _history(h.engine._read_state()).get("leftHeadroom") == 100.0, (
             "premise: consume-first recorded a full-quota departure"
         )
         h.clock.advance(301.0)
@@ -5348,7 +5374,7 @@ class TestHorizonAxisDoesNotFlap:
             "1": _usage(96),                            # 4 pts, NO reset known
             "2": _usage(92, self._days_out(h, 400)),
         }) is TickOutcome.SWITCHED
-        assert h.engine._read_state().get("leftRecoveryAt") is None, (
+        assert _history(h.engine._read_state()).get("leftRecoveryAt") is None, (
             "premise: the departure reset was unknown and stored as null"
         )
         h.clock.advance(3612.0)
@@ -5390,10 +5416,10 @@ class TestHorizonAxisDoesNotFlap:
         h.make_live("a@example.com", 1)
 
         # A pre-upgrade record: the bar is named, the snapshot is not there.
-        h.engine._mutate_state(lambda st: st.update({"lastSwitchFrom": "2"}))
-        h.engine._mutate_state(lambda st: st.pop("leftHeadroom", None))
-        h.engine._mutate_state(lambda st: st.pop("leftRecoveryAt", None))
-        assert "leftHeadroom" not in h.engine._read_state(), (
+        _mutate_history(h.engine, lambda st: st.update({"lastSwitchFrom": "2"}))
+        _mutate_history(h.engine, lambda st: st.pop("leftHeadroom", None))
+        _mutate_history(h.engine, lambda st: st.pop("leftRecoveryAt", None))
+        assert "leftHeadroom" not in _history(h.engine._read_state()), (
             "premise: the state carries no departure snapshot"
         )
 
@@ -5492,7 +5518,7 @@ class TestHorizonAxisDoesNotFlap:
             h.clock.advance(60.0)
         assert outcome is TickOutcome.SWITCHED
         assert h.active_number() == 2
-        state = h.engine._read_state()
+        state = _history(h.engine._read_state())
         assert "leftHeadroom" in state, (
             "premise: _perform writes the keys unconditionally even on failover"
         )
@@ -5599,7 +5625,7 @@ class TestHorizonAxisDoesNotFlap:
             h.clock.advance(60.0)
         assert outcome is TickOutcome.SWITCHED
         assert h.active_number() == 2
-        state = h.engine._read_state()
+        state = _history(h.engine._read_state())
         assert state.get("leftHeadroom") is None and state.get(
             "leftRecoveryAt"
         ) is None, "premise: a failover snapshot, keys present, values null"
@@ -5668,7 +5694,7 @@ class TestHorizonAxisDoesNotFlap:
             h.clock.advance(60.0)
         assert outcome is TickOutcome.SWITCHED
         assert h.active_number() == 2
-        state = h.engine._read_state()
+        state = _history(h.engine._read_state())
         assert state.get("leftHeadroom") is None and state.get(
             "leftRecoveryAt"
         ) is None, "premise: a failover snapshot, keys present, values null"
@@ -5726,7 +5752,7 @@ class TestHorizonAxisDoesNotFlap:
             h.clock.advance(60.0)
         assert outcome is TickOutcome.SWITCHED
         assert h.active_number() == 2
-        state = h.engine._read_state()
+        state = _history(h.engine._read_state())
         assert state.get("leftHeadroom") is None and state.get(
             "leftRecoveryAt"
         ) is None, "premise: a failover snapshot, keys present, values null"
@@ -5939,7 +5965,7 @@ class TestHorizonAxisDoesNotFlap:
                 "2": _usage(10),
             })
         assert outcome is TickOutcome.SWITCHED
-        state = h.engine._read_state()
+        state = _history(h.engine._read_state())
         assert state.get("leftRecoveryAt") == ranking_now + 100.0, (
             f"leftRecoveryAt={state.get('leftRecoveryAt')!r} -- a SECOND, "
             "independent clock() read after the ranking already decided "
@@ -5981,9 +6007,9 @@ class TestHorizonAxisDoesNotFlap:
 
         # Strip to the pre-upgrade shape: barred is named, no departure
         # evidence recorded at all -- absence releases, by design.
-        h.engine._mutate_state(lambda st: st.pop("leftHeadroom", None))
-        h.engine._mutate_state(lambda st: st.pop("leftRecoveryAt", None))
-        assert "leftHeadroom" not in h.engine._read_state()
+        _mutate_history(h.engine, lambda st: st.pop("leftHeadroom", None))
+        _mutate_history(h.engine, lambda st: st.pop("leftRecoveryAt", None))
+        assert "leftHeadroom" not in _history(h.engine._read_state())
 
         h.clock.advance(301.0)
         outcome = h.tick_with_usage({
@@ -6025,7 +6051,7 @@ class TestHorizonAxisDoesNotFlap:
             h.clock.advance(60.0)
         assert outcome is TickOutcome.SWITCHED
         assert h.active_number() == 2
-        state = h.engine._read_state()
+        state = _history(h.engine._read_state())
         assert "leftHeadroom" in state, (
             "premise: _perform writes the keys unconditionally even on failover"
         )
