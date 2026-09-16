@@ -199,20 +199,20 @@ ERROR_NOTES = {
 
 # Which stored source carried the struck refresh-token generation. Internal to
 # the dead-verdict path; each maps to exactly one displayed sentinel below.
-DEAD_LIVE = "live"  # the credential actually in use is dead — the user must act
-DEAD_STORED_ONLY = "stored_only"  # only cswap's backup is dead; account unproven
-DEAD_UNPROVEN = "unproven"  # struck, but the second source cannot be read
+_DEAD_LIVE = "live"  # the credential actually in use is dead — the user must act
+_DEAD_STORED_ONLY = "stored_only"  # only cswap's backup is dead; account unproven
+_DEAD_UNPROVEN = "unproven"  # struck, but the second source cannot be read
 
 # A quarantined slot's displayed state, by which source died. The account is
-# not fetched in any of the three, but only DEAD_LIVE proves a re-login is
+# not fetched in any of the three, but only _DEAD_LIVE proves a re-login is
 # needed; the other two mean "cswap cannot measure this", which must never be
 # dressed up as "the account is finished" (#1381 D5).
-DEAD_REASON_SENTINELS = {
-    DEAD_LIVE: USAGE_RELOGIN_REQUIRED,
-    DEAD_STORED_ONLY: USAGE_STORED_CREDENTIAL_STALE,
+_DEAD_REASON_SENTINELS = {
+    _DEAD_LIVE: USAGE_RELOGIN_REQUIRED,
+    _DEAD_STORED_ONLY: USAGE_STORED_CREDENTIAL_STALE,
     # An unreadable second source is the existing "cannot tell" state, and it
     # already carries the right remedy: retry from a GUI session.
-    DEAD_UNPROVEN: USAGE_KEYCHAIN_UNAVAILABLE,
+    _DEAD_UNPROVEN: USAGE_KEYCHAIN_UNAVAILABLE,
 }
 
 SENTINEL_NOTES = {
@@ -5006,8 +5006,10 @@ class ClaudeAccountSwitcher:
 
         entries = store.entries(identities, models)
         # Dead refresh-token lineage: quarantine. Surfacing the sentinel here both
-        # drives the "re-login needed" display and (via ``num not in sentinels``
-        # below) stops the endless fetch loop that would otherwise 401/429 forever.
+        # drives the display — which of the three quarantine states is shown
+        # depends on WHICH stored source died, see ``_token_dead_reason`` — and
+        # (via ``num not in sentinels`` below) stops the endless fetch loop that
+        # would otherwise 401/429 forever.
         for num in info_by_num:
             if num in sentinels:
                 continue
@@ -5015,7 +5017,7 @@ class ClaudeAccountSwitcher:
             _i = info_by_num[num]
             reason = self._token_dead_reason(entry, num, _i[1], _i[5], _i[4])
             if reason is not None:
-                sentinels[num] = DEAD_REASON_SENTINELS[reason]
+                sentinels[num] = _DEAD_REASON_SENTINELS[reason]
             elif entry.auth_dead_strikes and entry.token_dead():
                 # Struck, but no stored source still matches the condemned
                 # generation — the fingerprint healed the verdict.
@@ -5083,15 +5085,16 @@ class ClaudeAccountSwitcher:
             entries = store.entries(identities, models)
             # A fetch that just returned invalid_grant advances the strike to the
             # dead threshold. The pre-fetch quarantine scan above couldn't see it,
-            # so surface "re-login needed" in *this* pass instead of leaving the
-            # slot looking merely refresh-failed until the next refresh notices.
+            # so surface the quarantine state in *this* pass instead of leaving
+            # the slot looking merely refresh-failed until the next refresh
+            # notices. Which of the three it is follows the dead source, as above.
             for num in accepted:
                 _i = info_by_num[num]
                 reason = self._token_dead_reason(
                     entries[num], num, _i[1], _i[5], _i[4]
                 )
                 if reason is not None:
-                    sentinels[num] = DEAD_REASON_SENTINELS[reason]
+                    sentinels[num] = _DEAD_REASON_SENTINELS[reason]
 
         return {
             num: with_sentinel(entries[num], sentinels.get(num))
@@ -5198,7 +5201,7 @@ class ClaudeAccountSwitcher:
         onto one "re-login needed", so an account whose only fault is that
         cswap's backup went stale — a profile re-logged outside cswap — is
         reported as locked out, and the estate steers work away from the
-        account with the most headroom. ``DEAD_LIVE`` is the only one that
+        account with the most headroom. ``_DEAD_LIVE`` is the only one that
         proves the user must act.
         """
         if entry.token_dead(stored_fp=oauth.credential_fingerprint(stored)):
@@ -5206,7 +5209,7 @@ class ClaudeAccountSwitcher:
             # is proof the credential in use is dead. For an IDLE slot it is
             # only cswap's backup, and cswap cannot see whatever credential
             # that account's own profile may hold.
-            return DEAD_LIVE if is_active else DEAD_STORED_ONLY
+            return _DEAD_LIVE if is_active else _DEAD_STORED_ONLY
         if not is_active:
             return None
         backup, unreadable = self._read_account_credentials_ex(num, email)
@@ -5228,14 +5231,14 @@ class ClaudeAccountSwitcher:
             # carry the struck generation, so a row with zero strikes has
             # nothing to hold — an unreadable backup on an otherwise-healthy
             # account must not manufacture "re-login needed" out of nothing.
-            return DEAD_UNPROVEN if entry.token_dead() else None
+            return _DEAD_UNPROVEN if entry.token_dead() else None
         if backup and entry.token_dead(
             stored_fp=oauth.credential_fingerprint(backup)
         ):
             # The live credential did NOT carry the struck generation (checked
             # first, above); only cswap's backup did. Nothing here shows the
             # account is expired.
-            return DEAD_STORED_ONLY
+            return _DEAD_STORED_ONLY
         return None
 
     def _plans_after_fetch(

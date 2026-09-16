@@ -12,6 +12,8 @@ credential it can fetch with either way. What changes is the claim cswap makes
 about the ACCOUNT.
 """
 
+from __future__ import annotations
+
 import json
 from unittest.mock import patch
 
@@ -25,10 +27,10 @@ from claude_swap.json_output import (
     usage_fields,
 )
 from claude_swap.switcher import (
-    DEAD_LIVE,
-    DEAD_REASON_SENTINELS,
-    DEAD_STORED_ONLY,
-    DEAD_UNPROVEN,
+    _DEAD_LIVE,
+    _DEAD_REASON_SENTINELS,
+    _DEAD_STORED_ONLY,
+    _DEAD_UNPROVEN,
     ClaudeAccountSwitcher,
 )
 from claude_swap.usage_store import FetchRecord
@@ -123,10 +125,10 @@ class TestStoredCredentialStale:
 
         assert entries["2"].sentinel == USAGE_KEYCHAIN_UNAVAILABLE
 
-    @pytest.mark.parametrize("reason", [DEAD_LIVE, DEAD_STORED_ONLY, DEAD_UNPROVEN])
+    @pytest.mark.parametrize("reason", [_DEAD_LIVE, _DEAD_STORED_ONLY, _DEAD_UNPROVEN])
     def test_every_reason_maps_to_a_sentinel(self, reason):
         """A reason with no mapping would raise KeyError at the display site."""
-        assert reason in DEAD_REASON_SENTINELS
+        assert reason in _DEAD_REASON_SENTINELS
 
     def test_quarantine_and_reason_cannot_drift_apart(self, temp_home):
         """``_entry_token_dead`` is exactly "a reason was named"."""
