@@ -783,16 +783,30 @@ class CredentialStore:
         returns only on rc 0 or rc 44 (already absent) and raises otherwise, so
         a return is proof — which is the fact ``_pin_file_mode`` needs and used
         to discard. Off macOS there is no Keychain item, hence ``True``.
+
+        Fork fix D1 (upstream #206): deletes the item(s)
+        :func:`_active_oauth_keychain_services` resolves for this environment,
+        not the hardcoded unsuffixed name. Deleting the unsuffixed item from
+        inside a custom profile did both halves of the damage — it logged the
+        DEFAULT profile out, and left this profile's own hashed item in place to
+        shadow the plaintext file the caller just fell back to.
+
+        Every resolved item is attempted even after one fails: an unattempted
+        item is a residual that can shadow, so skipping the rest would make the
+        ``False`` verdict true for the wrong reason. The verdict is the
+        conjunction — one survivor is enough to shadow.
         """
         if self._host.platform != Platform.MACOS:
             return True
-        try:
-            macos_keychain.delete_password(
-                CLAUDE_CODE_KEYCHAIN_SERVICE, macos_keychain.keychain_account_name()
-            )
-        except Exception:
-            return False  # best-effort; a down Keychain can't be cleaned now
-        return True
+        cleared = True
+        for service in _active_oauth_keychain_services():
+            try:
+                macos_keychain.delete_password(
+                    service, macos_keychain.keychain_account_name()
+                )
+            except Exception:
+                cleared = False  # best-effort; a down Keychain can't be cleaned now
+        return cleared
 
     def _write_credentials(self, credentials: str) -> None:
         """Write Claude Code's active credential, enforcing a single auth axis.
@@ -973,12 +987,33 @@ class CredentialStore:
         """
         if self._use_keychain():
             try:
-                self._kc_call(
-                    macos_keychain.set_password,
-                    CLAUDE_CODE_KEYCHAIN_SERVICE,
-                    macos_keychain.keychain_account_name(),
-                    credentials,
-                )
+                # Fork fix D1 (upstream #206): write the item(s) claude reads for
+                # THIS environment, resolved by the same function the active read
+                # uses, so read and write cannot name different profiles. The
+                # hardcoded unsuffixed name they replace belongs to the default
+                # profile only: under CLAUDE_CONFIG_DIR it put the target
+                # account's credential in a profile the caller is not in, while
+                # the profile claude does read kept its old account.
+                #
+                # Writing claude's hashed item is new for cswap and the session
+                # module's docstring cautions against authoring that format. The
+                # caution does not reach here: the format is not authored, it is
+                # round-tripped. The active READ already parses this exact item
+                # under the same derived name, so a naming or format drift would
+                # break reads first and is not introduced by writing.
+                #
+                # All-or-nothing. A resolver answer with two names is one profile
+                # reached two ways (an exported CLAUDE_CONFIG_DIR naming the
+                # default profile), so a partial write is precisely the
+                # disagreement this fix exists to remove: any failure falls
+                # through to the single-backend file path below.
+                for service in _active_oauth_keychain_services():
+                    self._kc_call(
+                        macos_keychain.set_password,
+                        service,
+                        macos_keychain.keychain_account_name(),
+                        credentials,
+                    )
             except macos_keychain.KEYCHAIN_ERRORS as e:
                 # _kc_call flipped routing to file mode; fall through to the file.
                 # (A programming error is NOT caught here — it propagates.)
