@@ -76,6 +76,15 @@ STATE_SCHEMA_VERSION = 1
 # refresh-token lineage is dead in every profile), so it stays top-level and
 # shared. Poll plans live in the usage store and are untouched.
 #
+# THE SLICE IS NOT A DIRECTORY-TO-ACCOUNT MAP, and nothing may read it as one.
+# It records what an engine last DID (which slot it left, which it landed on,
+# what that slot's headroom was), keyed by the profile that did it. The same
+# directory is deliberately re-logged to different accounts, so a slot number
+# in here says nothing about which account a directory holds; the account is
+# always read live (see `identity.read_profile_account`). Every value is
+# overwritten by that profile's next switch, so a stale slice is self-
+# correcting and the anti-flap gates are its only readers.
+#
 # No schema bump. The read path honours a pre-upgrade record's top-level keys
 # until the first post-upgrade switch retires them, and an older cswap reading
 # the new file finds the keys absent and lands in its existing

@@ -32,8 +32,10 @@ wrong answer this reader exists to remove.
 fingerprint and no file bytes reach the returned object, so the result is safe
 to print, log and paste into a ticket.
 
-This module is a leaf: it imports the path, session and oauth helpers and takes
-the switcher as a parameter. It never writes anything.
+This module is a leaf: it imports the path, session and oauth helpers and two
+leaf helpers from ``credentials`` (the active-store service name and the
+API-key shape test), and takes the switcher as a parameter. Nothing it imports
+imports it back, and it never writes anything.
 """
 
 from __future__ import annotations
@@ -160,10 +162,13 @@ def attribute_credential(switcher, credentials: str) -> tuple[str, str, str] | N
     if not live:
         return None
     for num, email, org_uuid in _slot_rows(switcher):
-        try:
-            stored = switcher._read_account_credentials(num, email)
-        except Exception:
-            continue
+        # Called bare, like every other call site of this reader. It already
+        # absorbs each legitimate failure internally — a missing file, an OS
+        # error, corrupt base64, an unusable Keychain — and answers "" for all
+        # of them. Only a programming error can reach here, and this codebase
+        # lets those propagate rather than turning a bug into a silent
+        # "no match", which is the one answer this function must never invent.
+        stored = switcher._read_account_credentials(num, email)
         if stored and oauth.credential_fingerprint(stored) == live:
             return (num, email, org_uuid)
     return None
@@ -325,28 +330,29 @@ def active_slot_warnings(accounts_info) -> list[str]:
     beside it, so the ``schemaVersion: 1`` payload CodexBar reads is unchanged
     when nothing is wrong.
     """
-    rows = list(accounts_info)
-    active = [r for r in rows if r[4]]
+    rows = [
+        (num, email, org_uuid, is_active, creds)
+        for num, email, _org_name, org_uuid, is_active, creds, _alias
+        in accounts_info
+    ]
+    active = [r for r in rows if r[3]]
     if len(active) != 1:
         return []
-    num, email, _org_name, org_uuid, _is_active, creds, _alias = active[0]
+    num, email, _org_uuid, _is_active, creds = active[0]
     if not creds or looks_like_api_key(creds):
         return []
     live = oauth.credential_fingerprint(creds)
     if not live:
         return []
-    for other in rows:
-        if other[4]:
-            continue
-        other_creds = other[5]
-        if not other_creds:
+    for other_num, other_email, _other_org, other_active, other_creds in rows:
+        if other_active or not other_creds:
             continue
         if oauth.credential_fingerprint(other_creds) != live:
             continue
         return [
             f"Account-{num} ({email}) is marked active, but the credential "
-            f"this profile presents is Account-{other[0]}'s ({other[1]}). "
-            f"The usage shown against {email} is {other[1]}'s. Run "
+            f"this profile presents is Account-{other_num}'s ({other_email}). "
+            f"The usage shown against {email} is {other_email}'s. Run "
             f"`cswap whoami` for the profile's own reading, and `cswap add` "
             f"after a /login to re-attribute it."
         ]

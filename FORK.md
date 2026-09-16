@@ -11,7 +11,11 @@ offer the fixes upstream yet — run them for some weeks first, so we do not
 create a review dependency on a stranger.
 
 Version marker: `0.27.0b1+estate.1`. `cswap --version` therefore tells a fork
-build apart from an upstream one without reading any file.
+build apart from an upstream one without reading any file. **SUGGESTED — not
+one of the four defects.** It is one line, and it serves John's ruling that
+this fork runs for some weeks before anything is offered upstream: without it,
+nothing on the machine distinguishes a fork build from an upstream one. Drop it
+if it is not wanted.
 
 Branch `estate`. `upstream` is the original remote, so `git fetch upstream` and
 a rebase are the way to take later upstream work.

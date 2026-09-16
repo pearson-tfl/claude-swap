@@ -384,6 +384,38 @@ class TestListWarnings:
         for secret in ("sk-a", "sk-b", "rt-a", "rt-b", "sha256"):
             assert secret not in warnings[0]
 
+    def test_a_changed_row_shape_fails_loudly_rather_than_shifting_fields(self):
+        """The row is read by NAME, so a producer that grows a field raises
+        here. Read by index it would silently take the new field as
+        ``is_active`` and the old one as the credential, and answer with
+        confidence about the wrong columns — which is the class of silent
+        wrong answer this whole module exists to remove."""
+        grown = [(1, "a@example.com", "", "org-a", "new-field", True, A_CREDS, "")]
+        with pytest.raises(ValueError):
+            identity.active_slot_warnings(grown)
+
+
+class TestAProgrammingErrorIsNotSwallowed:
+    def test_a_bug_in_the_backup_reader_propagates(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """``_read_account_credentials`` already absorbs every legitimate
+        failure and answers "". Only a bug can raise, and catching it would
+        turn that bug into "no match" — reported as ``unverified``, which
+        reads as an ordinary uncaptured profile and hides the fault."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        s = _switcher(
+            config_identity=("a@example.com", "org-a", "uuid-a"), live=A_CREDS
+        )
+
+        def boom(num, email):
+            raise AttributeError("simulated bug in the backup reader")
+
+        monkeypatch.setattr(s, "_read_account_credentials", boom)
+
+        with pytest.raises(AttributeError):
+            identity.read_profile_account(s)
+
 
 class TestWhoamiCommand:
     """``cswap whoami`` — the command an agent runs to read its own account."""
