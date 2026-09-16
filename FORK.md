@@ -158,6 +158,27 @@ out". Three states now, not two:
 | only cswap's stored copy is dead | `stored_credential_stale` (new) |
 | struck, but the second source cannot be read | `keychain_unavailable` |
 
+**The three-way split is only fully reachable for the ACTIVE slot, and this
+matters — it is the limit of the fix.** The active slot has two stored sources,
+so cswap performs a real second read and can tell a dead credential-in-use from
+a merely stale backup. An **idle** slot has one: cswap's own backup. Nothing in
+the collect path carries that account's live credential, so `relogin_required`
+is unreachable for an idle slot, and a genuinely expired idle account and a
+healthy idle account with a stale backup both report `stored_credential_stale`.
+
+So for an idle slot the new state means **"cswap cannot tell"**, not #1381's
+words "unattributable-but-valid". cswap proves only that its own copy died; it
+is silent on the account. That is honest where the old state was not — it stops
+asserting a death cswap never established, which was the harm — but it is a
+weaker claim than proof of liveness, and this fork does not pretend otherwise.
+
+Proving liveness for an idle slot needs evidence cswap does not currently
+gather: a read of that profile's own Keychain item, or the network probe
+`whoami --verify` already performs. Both are real costs — a per-profile Keychain
+read on a path CodexBar polls every few minutes, or a network call on a path
+that is deliberately offline — so which, if either, is worth it is a decision
+for #1381, not a gap to be quietly closed here.
+
 `_entry_token_dead` keeps its exact boolean meaning and is now defined as
 "`_token_dead_reason` named a cause", so the quarantine decision and the
 displayed state cannot drift apart. **No fetch behaviour changes**: a
@@ -175,10 +196,18 @@ exist for, is unchanged. One was strengthened: the quarantine-lift test
 asserted only "not re-login", which the new state would have satisfied
 vacuously, and now asserts the strike survives under neither state.
 
-**CodexBar contract.** `schemaVersion` stays 1. `usageStatus` gains one value.
-A consumer switching on the old set sees an unknown string rather than a wrong
-one; `SENTINEL_NOTES` lookups already fall back to the raw value, so no display
-path can raise on it.
+**CodexBar contract.** `schemaVersion` stays 1 and `usageStatus` gains one
+value, which is additive rather than a redefinition: a consumer switching on the
+old set meets an unknown string instead of a confidently wrong one.
+
+Two separate claims, which an earlier draft of this file ran together. cswap's
+OWN displays are provably safe — `SENTINEL_NOTES` lookups fall back to the raw
+value (`menubar.py`, `tui/data.py`, `switcher.py`), so no display path here can
+raise. That says nothing about CodexBar, which is a separate application not in
+this repository. What was measured of it: CodexBar 0.60.3's binary contains
+`relogin_required`, `token_expired`, `keychain_unavailable`, `foreign_credential`,
+`api_key` and `unavailable`, and does not contain `stored_credential_stale`. How
+it handles an unrecognised value was not established and cannot be from here.
 
 Files: `src/claude_swap/json_output.py`, `src/claude_swap/switcher.py`,
 `tests/test_fork_stored_credential_stale.py`, `tests/test_switcher.py`.
