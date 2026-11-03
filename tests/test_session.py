@@ -1390,6 +1390,19 @@ class TestRun:
         assert exc.value.env["CLAUDE_CONFIG_DIR"] == str(temp_home / ".claude")
         assert "already the active default login" in capsys.readouterr().out
 
+    def test_preset_naming_the_default_profile_keeps_require_session_refusal(
+        self, manager, capture_exec, monkeypatch, temp_home,
+        auth_status_tracks_seed, refresh_rotates,
+    ):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(temp_home / ".claude"))
+        monkeypatch.setattr(
+            manager.switcher,
+            "_get_current_account",
+            lambda: (ACCOUNT_EMAIL, ORG_UUID),
+        )
+        with pytest.raises(SessionError, match="active default login"):
+            manager.run("2", [], require_session=True)
+
     def test_auth_override_vars_scrubbed_from_session_env(
         self,
         manager,

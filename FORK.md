@@ -22,8 +22,9 @@ a rebase are the way to take later upstream work.
 
 ## What this fork changes
 
-Four fixes, one commit each, each with its own test file. Nothing else in the
-tool is touched.
+Fixes D1–D6, one commit each. D1–D4 are the original four, each with its own
+test file; D5 and D6 were found later on this estate. Nothing else in the tool
+is touched.
 
 ### D1 — upstream #206: the credential write followed the wrong profile
 
@@ -211,6 +212,22 @@ it handles an unrecognised value was not established and cannot be from here.
 
 Files: `src/claude_swap/json_output.py`, `src/claude_swap/switcher.py`,
 `tests/test_fork_stored_credential_stale.py`, `tests/test_switcher.py`.
+
+### D6 — `CLAUDE_CONFIG_DIR=~/.claude` switched off the same-account guard
+
+Found on this estate, 3 November 2026 (`pearson-tfl/Agent-Harness-Reconfig`
+#5645). `cswap run N` refuses to give the account that is the active default
+login a second credential copy, because seeding one spends the refresh token
+the default profile holds. Any set `CLAUDE_CONFIG_DIR` skipped that guard, and
+the estate's launch lines set it to `~/.claude` itself. On the Dell, with the
+default login on slot 2, `CLAUDE_CONFIG_DIR=/Users/johnp/.claude cswap run 2`
+bootstrapped a session profile at 18:33Z, and the default login died at 18:44Z
+("OAuth session expired and could not be refreshed"). Now a preset that
+resolves to the default profile keeps the guard, which still identifies the
+default login from that profile's `.claude.json`; a preset naming any other
+folder still skips it.
+
+Files: `src/claude_swap/session.py`, `tests/test_session.py`.
 
 ## What this fork deliberately does not do
 
