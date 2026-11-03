@@ -1371,6 +1371,25 @@ class TestRun:
         assert exc.value.env["CLAUDE_CONFIG_DIR"] == str(session_dir)
         assert "overriding it for this launch" in capsys.readouterr().out
 
+    def test_preset_naming_the_default_profile_keeps_fast_path(
+        self, manager, capture_exec, monkeypatch, temp_home, capsys,
+        auth_status_tracks_seed, refresh_rotates,
+    ):
+        # `CLAUDE_CONFIG_DIR=$HOME/.claude cswap run N` while N is the default
+        # login: a session profile would be a second copy of the default
+        # profile's refresh token, and seeding it spends that token (#5645).
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(temp_home / ".claude"))
+        monkeypatch.setattr(
+            manager.switcher,
+            "_get_current_account",
+            lambda: (ACCOUNT_EMAIL, ORG_UUID),
+        )
+        with pytest.raises(_ExecCalled) as exc:
+            manager.run("2", [])
+
+        assert exc.value.env["CLAUDE_CONFIG_DIR"] == str(temp_home / ".claude")
+        assert "already the active default login" in capsys.readouterr().out
+
     def test_auth_override_vars_scrubbed_from_session_env(
         self,
         manager,

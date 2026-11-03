@@ -58,7 +58,10 @@ from claude_swap.exceptions import (
 from claude_swap.fsutil import replace_with_retry
 from claude_swap.locking import FileLock
 from claude_swap.models import Platform
-from claude_swap.paths import get_default_global_config_path
+from claude_swap.paths import (
+    get_default_claude_config_home,
+    get_default_global_config_path,
+)
 from claude_swap.printer import accent, dimmed, muted, warning
 from claude_swap.process_detection import ClaudeSession, scan_sessions
 from claude_swap.settings import atomic_write_json
@@ -570,9 +573,14 @@ class SessionManager:
         self._ensure_not_api_key(account_num, email)
 
         config_dir_preset = os.environ.get("CLAUDE_CONFIG_DIR")
-        if config_dir_preset:
-            # With CLAUDE_CONFIG_DIR set, "current default account" is
-            # meaningless (we may already be inside a session terminal), so
+        # A preset naming the default profile itself is the default login, so
+        # the same-account guard below still applies (#5645).
+        if config_dir_preset and (
+            Path(config_dir_preset).expanduser().resolve()
+            != get_default_claude_config_home().resolve()
+        ):
+            # With CLAUDE_CONFIG_DIR set elsewhere, "current default account"
+            # is meaningless (we may already be inside a session terminal), so
             # the same-account fast path below must not trigger.
             warning(
                 f"CLAUDE_CONFIG_DIR is already set ({config_dir_preset}); "
