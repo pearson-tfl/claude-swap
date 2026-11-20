@@ -22,7 +22,7 @@ a rebase are the way to take later upstream work.
 
 ## What this fork changes
 
-Fixes D1–D7, one commit each. D1–D4 are the original four, each with its own
+Fixes D1–D7, each a commit with its own review follow-ups. D1–D4 are the original four, each with its own
 test file; D5, D6 and D7 were found later on this estate. Nothing else in the tool
 is touched.
 
@@ -136,6 +136,9 @@ Files: `src/claude_swap/autoswitch.py`,
 
 ### D5 — a dead stored copy was reported as a dead account
 
+Amended by D7: an idle slot whose own folder holds a later login is no longer
+left at `stored_credential_stale`, and is fetched.
+
 Found on this estate, 16 September 2026, and not in the original four. `cswap
 --list --json` reported slot 4 (`bbconsult@jeptech.co.uk`) as
 `usageStatus: relogin_required` with both usage figures null, while the account
@@ -248,7 +251,10 @@ must positively show it is signed in as the slot's account: an unreadable
 identity, which the fetch path tolerates, is refused here. Every refusal keeps
 both copies and the mark as they were: a folder signed in as another account
 or with no readable identity, an older or equal login, a stale marker, an
-unreadable copy, or lock contention. This narrows D5's limit: for an idle slot whose folder
+unreadable copy, or lock contention. A live seat's later login clears the mark while cswap's copy stays dead
+until the seat exits and the copy is adopted; meanwhile any path that POSTs
+that copy (the active slot's recovery branch, `cswap run`'s refresh) earns a
+fresh strike, and `cswap run` refuses on it. This narrows D5's limit: for an idle slot whose folder
 holds a later login, cswap now has the view D5 said it lacked. No scheduled job
 is added; every existing read (`--list`, `--status`, the TUI, the menu bar,
 auto-switch) runs it.

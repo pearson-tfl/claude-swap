@@ -5159,6 +5159,9 @@ class ClaudeAccountSwitcher:
         backup — as the import used to — leaves an active slot struck on its
         live generation unhealable, and that is the slot most likely to be
         quarantined in the first place.
+
+        ``stored_copy_only`` judges cswap's backup alone, as a seed source:
+        `cswap run` asks whether the copy it would seed from is struck.
         """
         # The org uuid is part of the row identity (UsageStore._matches
         # compares it for EQUALITY), so an empty one silently matches nothing:
@@ -5173,7 +5176,6 @@ class ClaudeAccountSwitcher:
         entry = self._usage_store.entries(ident).get(num)
         if entry is None:
             return False
-        # ``stored_copy_only``: judge cswap's backup alone, as a seed source.
         is_active = not stored_copy_only and num == self.current_account_number()
         # The backup is a stored source on BOTH paths — directly when idle,
         # and as _entry_token_dead's second source when active — and each
