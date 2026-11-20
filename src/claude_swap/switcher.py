@@ -2885,6 +2885,28 @@ class ClaudeAccountSwitcher:
         )
         return True
 
+    def _session_supersedes_dead_backup(
+        self, account_num: str, email: str, org_uuid: str
+    ) -> bool:
+        """Whether the slot's own session profile makes a struck backup moot.
+
+        A quiescent profile ahead of the backup is adopted into it, so the
+        strike no longer binds to any stored source. A live one is never
+        written or refreshed by cswap: it qualifies when it is this slot's
+        account on a later generation, and the fetch path then reads it
+        read-only. Every refusal (drifted identity, stale marker, unreadable
+        copy, lock contention) answers False and leaves both copies as they
+        were.
+        """
+        try:
+            if self._adopt_session_credential(account_num, email, org_uuid):
+                return True
+        except LockError:
+            return False
+        if not self._live_session_pids(account_num, email):
+            return False
+        return self._session_profile_ahead(account_num, email, org_uuid) is not None
+
     def _delete_session_profile(self, account_num: str, email: str) -> None:
         """Remove an account's session profile dir and its keychain entry.
 
@@ -5016,6 +5038,17 @@ class ClaudeAccountSwitcher:
             entry = entries[num]
             _i = info_by_num[num]
             reason = self._token_dead_reason(entry, num, _i[1], _i[5], _i[4])
+            if reason == _DEAD_STORED_ONLY and self._session_supersedes_dead_backup(
+                num, _i[1], _i[3]
+            ):
+                # The profile holds a later login of this account (adopted, or
+                # live and read-only), so the dead copy no longer speaks for
+                # the slot: fall through to the heal below and fetch.
+                reason = None
+                if not _i[4]:  # idle: info[5] is the backup, maybe just adopted
+                    backup, unreadable = self._read_account_credentials_ex(num, _i[1])
+                    if backup and not unreadable:
+                        info_by_num[num] = (*_i[:5], backup, *_i[6:])
             if reason is not None:
                 sentinels[num] = _DEAD_REASON_SENTINELS[reason]
             elif entry.auth_dead_strikes and entry.token_dead():

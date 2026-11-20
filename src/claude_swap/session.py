@@ -702,6 +702,19 @@ class SessionManager:
             self._sync_sharing(session_dir, share, share_history)
             return session_dir, account_num, email
 
+        # Every path below re-seeds the profile from the stored copy. One the
+        # server already refused only signs the profile out on claude's first
+        # refresh, so send the user to a sign-in instead of seeding it.
+        if self.switcher._slot_token_dead(account_num, email):
+            raise SessionError(
+                f"Account-{account_num}'s stored login ({email}) was refused "
+                f"by the server, so it is not copied into its session profile "
+                f"(that would sign the profile out). Sign in instead: run "
+                f"`CLAUDE_CONFIG_DIR={session_dir} claude` and /login as "
+                f"{email}; the next cswap read picks that login up. Or log in "
+                f"and re-add: cswap --add-account --slot {account_num}"
+            )
+
         # One refresh so the profile starts with a fresh access token —
         # BEFORE the bootstrap lock (the gate takes the same non-reentrant
         # FileLock and POSTs over the network, which must never run under a
