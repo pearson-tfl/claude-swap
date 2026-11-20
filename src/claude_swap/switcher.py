@@ -2894,10 +2894,19 @@ class ClaudeAccountSwitcher:
         strike no longer binds to any stored source. A live one is never
         written or refreshed by cswap: it qualifies when it is this slot's
         account on a later generation, and the fetch path then reads it
-        read-only. Every refusal (drifted identity, stale marker, unreadable
-        copy, lock contention) answers False and leaves both copies as they
-        were.
+        read-only. Every refusal (an identity that is not positively this
+        slot's, stale marker, unreadable copy, lock contention) answers False
+        and leaves both copies as they were.
         """
+        from claude_swap.session import read_session_identity
+
+        # ``session_identity_drifted`` trusts an unreadable identity; clearing
+        # a dead mark needs proof the folder is signed in as this account.
+        identity = read_session_identity(self._session_dir(account_num, email))
+        if identity is None or identity[0] != email or (
+            identity[1] and org_uuid and identity[1] != org_uuid
+        ):
+            return False
         try:
             if self._adopt_session_credential(account_num, email, org_uuid):
                 return True
@@ -5134,7 +5143,9 @@ class ClaudeAccountSwitcher:
             for num in info_by_num
         }
 
-    def _slot_token_dead(self, num: str, email: str) -> bool:
+    def _slot_token_dead(
+        self, num: str, email: str, *, stored_copy_only: bool = False
+    ) -> bool:
         """Is this slot quarantined as refresh-token-dead, right now?
 
         The same question :meth:`_entry_token_dead` answers for the collectors,
@@ -5162,7 +5173,8 @@ class ClaudeAccountSwitcher:
         entry = self._usage_store.entries(ident).get(num)
         if entry is None:
             return False
-        is_active = num == self.current_account_number()
+        # ``stored_copy_only``: judge cswap's backup alone, as a seed source.
+        is_active = not stored_copy_only and num == self.current_account_number()
         # The backup is a stored source on BOTH paths — directly when idle,
         # and as _entry_token_dead's second source when active — and each
         # turns an unreadable one into "dead" by a different route: an empty

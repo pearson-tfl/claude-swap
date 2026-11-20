@@ -243,10 +243,12 @@ a live seat's login read-only. One dead copy stayed dead for good. Now a slot
 whose only fault is a struck stored copy (`_DEAD_STORED_ONLY`) first asks its
 folder: a quiet folder ahead of the copy is adopted into it; a live seat holding
 a later login of the same account is read read-only, never written or refreshed
-by cswap. Either way the strike is cleared and the slot is fetched. Every
-refusal keeps both copies and the mark as they were: a folder signed in as
-another account, an older or equal login, a stale marker, an unreadable copy,
-or lock contention. This narrows D5's limit: for an idle slot whose folder
+by cswap. Either way the strike is cleared and the slot is fetched. The folder
+must positively show it is signed in as the slot's account: an unreadable
+identity, which the fetch path tolerates, is refused here. Every refusal keeps
+both copies and the mark as they were: a folder signed in as another account
+or with no readable identity, an older or equal login, a stale marker, an
+unreadable copy, or lock contention. This narrows D5's limit: for an idle slot whose folder
 holds a later login, cswap now has the view D5 said it lacked. No scheduled job
 is added; every existing read (`--list`, `--status`, the TUI, the menu bar,
 auto-switch) runs it.
@@ -255,12 +257,21 @@ auto-switch) runs it.
 was re-seeded from cswap's stored copy (`setup_session` → `_bootstrap`) even
 when that copy was the one marked dead, and claude blanked it on its first
 refresh. On 20 November that signed folders 3 and 4 out eleven times. Now
-`setup_session` refuses before the refresh and the seed whenever the slot is
-marked dead (`_slot_token_dead`), and tells the user to sign in to the folder
-instead. A folder that is already signed in still launches on the reuse path.
+`setup_session` refuses before the refresh and the seed whenever the stored
+copy it would seed from is marked dead (`_slot_token_dead(...,
+stored_copy_only=True)`, so an active slot's struck live login does not
+block a healthy copy), and again when that refresh comes back
+`invalid_grant`: a live seat's later login clears the mark, so a copy can be
+dead and unmarked by the time its folder signs out. Either way it tells the
+user to sign in to the folder instead. A folder that is already signed in still launches on the reuse path.
+
+Two existing tests in `tests/test_session.py` never stubbed that refresh, so
+they sent a real refresh request with a fake token and continued past the
+refusal; they now take the file's own `refresh_rotates` fixture and stay
+offline. Their assertions are unchanged.
 
 Files: `src/claude_swap/switcher.py`, `src/claude_swap/session.py`,
-`tests/test_fork_session_catch_up.py`.
+`tests/test_fork_session_catch_up.py`, `tests/test_session.py`.
 
 ## What this fork deliberately does not do
 
@@ -298,7 +309,7 @@ the `.claude.json`-versus-Keychain disagreement, fixed above.
     cd ~/Code/cswap
     uv run pytest -q
 
-2335 passed, 4 skipped at the head of `estate`. The suite is offline and never
+2338 passed, 4 skipped at the head of `estate`. The suite is offline and never
 touches the login keychain.
 
 ## Installing the fork

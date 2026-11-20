@@ -14,6 +14,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -155,6 +156,20 @@ class TestReadCatchesUpFromTheSessionFolder:
         assert (session_dir / ".credentials.json").read_text() == profile
         assert _strikes(s) == 1
 
+    def test_folder_with_no_readable_identity_keeps_the_mark(self, struck):
+        """Nothing proves whose login it is, so it is not adopted."""
+        s, dead = struck
+        profile = _creds("sk-fresh", 7200)
+        session_dir = _seed_profile(s, profile)
+        (session_dir / ".claude.json").unlink()
+
+        entry, fetch = _collect(s, dead)
+
+        assert entry.sentinel == USAGE_STORED_CREDENTIAL_STALE
+        fetch.assert_not_called()
+        assert s.read_account_credentials("2", EMAIL) == dead
+        assert _strikes(s) == 1
+
     def test_unreadable_folder_login_keeps_the_mark(self, struck):
         s, dead = struck
         _seed_profile(s, _creds("sk-fresh", 7200))
@@ -230,3 +245,37 @@ class TestRunRefusesToSeedFromADeadCopy:
 
         assert got == session_dir
         assert (session_dir / ".credentials.json").read_text() == ROTATED_CREDS
+
+    def test_a_copy_refused_on_the_run_refresh_is_not_seeded(
+        self, manager, seeded_switcher, auth_status_tracks_seed, monkeypatch
+    ):
+        """Not yet marked (a read cleared the mark for a live seat that has
+        since signed out), but the refresh is refused: same refusal."""
+        monkeypatch.setattr(
+            ClaudeAccountSwitcher, "consume_backup_grant",
+            lambda self, num, email, snap: oauth.RefreshOutcome(
+                None, "invalid_grant"
+            ),
+        )
+        session_dir = seeded_switcher._session_dir(ACCOUNT_NUM, ACCOUNT_EMAIL)
+
+        with pytest.raises(SessionError, match="Sign in instead"):
+            manager.setup_session(ACCOUNT_NUM, share=False)
+
+        assert not (session_dir / ".credentials.json").exists()
+
+    def test_only_the_seed_source_is_judged(self, seeded_switcher):
+        """Active slot: a strike on the live login says nothing about the
+        stored copy the seed would use."""
+        live = _creds("sk-live", 7200)
+        _strike(seeded_switcher, ACCOUNT_NUM, ACCOUNT_EMAIL, ORG_UUID, live)
+        with patch.object(
+            seeded_switcher, "current_account_number", return_value=ACCOUNT_NUM
+        ), patch.object(
+            seeded_switcher._store, "_read_active_credentials",
+            return_value=SimpleNamespace(value=live),
+        ):
+            assert seeded_switcher._slot_token_dead(ACCOUNT_NUM, ACCOUNT_EMAIL)
+            assert not seeded_switcher._slot_token_dead(
+                ACCOUNT_NUM, ACCOUNT_EMAIL, stored_copy_only=True
+            )

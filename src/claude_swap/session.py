@@ -529,6 +529,17 @@ def _probe_env(session_dir: Path) -> dict[str, str]:
     return env
 
 
+def _dead_copy_error(account_num: str, email: str, session_dir: Path) -> SessionError:
+    return SessionError(
+        f"Account-{account_num}'s stored login ({email}) was refused by the "
+        f"server, so it is not copied into its session profile (that would "
+        f"sign the profile out). Sign in instead: run "
+        f"`CLAUDE_CONFIG_DIR={session_dir} claude` and /login as {email}; the "
+        f"next cswap read picks that login up. Or log in and re-add: "
+        f"cswap --add-account --slot {account_num}"
+    )
+
+
 class SessionManager:
     """Bootstraps per-account session profiles and launches Claude into them."""
 
@@ -705,15 +716,10 @@ class SessionManager:
         # Every path below re-seeds the profile from the stored copy. One the
         # server already refused only signs the profile out on claude's first
         # refresh, so send the user to a sign-in instead of seeding it.
-        if self.switcher._slot_token_dead(account_num, email):
-            raise SessionError(
-                f"Account-{account_num}'s stored login ({email}) was refused "
-                f"by the server, so it is not copied into its session profile "
-                f"(that would sign the profile out). Sign in instead: run "
-                f"`CLAUDE_CONFIG_DIR={session_dir} claude` and /login as "
-                f"{email}; the next cswap read picks that login up. Or log in "
-                f"and re-add: cswap --add-account --slot {account_num}"
-            )
+        if self.switcher._slot_token_dead(
+            account_num, email, stored_copy_only=True
+        ):
+            raise _dead_copy_error(account_num, email, session_dir)
 
         # One refresh so the profile starts with a fresh access token —
         # BEFORE the bootstrap lock (the gate takes the same non-reentrant
@@ -729,6 +735,10 @@ class SessionManager:
             outcome = self.switcher.consume_backup_grant(
                 account_num, email, pre_creds
             )
+            if outcome.error == "invalid_grant":
+                # Refused now though not yet marked (a read cleared the mark
+                # while a live seat held a later login): same refusal.
+                raise _dead_copy_error(account_num, email, session_dir)
             if outcome.error is not None and outcome.credentials:
                 # `error is None` is the gate's own "the slot is freshened
                 # and safe to activate" signal, and it is NOT implied by
