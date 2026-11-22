@@ -2885,6 +2885,37 @@ class ClaudeAccountSwitcher:
         )
         return True
 
+    def _session_supersedes_dead_backup(
+        self, account_num: str, email: str, org_uuid: str
+    ) -> bool:
+        """Whether the slot's own session profile makes a struck backup moot.
+
+        A quiescent profile ahead of the backup is adopted into it, so the
+        strike no longer binds to any stored source. A live one is never
+        written or refreshed by cswap: it qualifies when it is this slot's
+        account on a later generation, and the fetch path then reads it
+        read-only. Every refusal (an identity that is not positively this
+        slot's, stale marker, unreadable copy, lock contention) answers False
+        and leaves both copies as they were.
+        """
+        from claude_swap.session import read_session_identity
+
+        # ``session_identity_drifted`` trusts an unreadable identity; clearing
+        # a dead mark needs proof the folder is signed in as this account.
+        identity = read_session_identity(self._session_dir(account_num, email))
+        if identity is None or identity[0] != email or (
+            identity[1] and org_uuid and identity[1] != org_uuid
+        ):
+            return False
+        try:
+            if self._adopt_session_credential(account_num, email, org_uuid):
+                return True
+        except LockError:
+            return False
+        if not self._live_session_pids(account_num, email):
+            return False
+        return self._session_profile_ahead(account_num, email, org_uuid) is not None
+
     def _delete_session_profile(self, account_num: str, email: str) -> None:
         """Remove an account's session profile dir and its keychain entry.
 
@@ -5016,6 +5047,17 @@ class ClaudeAccountSwitcher:
             entry = entries[num]
             _i = info_by_num[num]
             reason = self._token_dead_reason(entry, num, _i[1], _i[5], _i[4])
+            if reason == _DEAD_STORED_ONLY and self._session_supersedes_dead_backup(
+                num, _i[1], _i[3]
+            ):
+                # The profile holds a later login of this account (adopted, or
+                # live and read-only), so the dead copy no longer speaks for
+                # the slot: fall through to the heal below and fetch.
+                reason = None
+                if not _i[4]:  # idle: info[5] is the backup, maybe just adopted
+                    backup, unreadable = self._read_account_credentials_ex(num, _i[1])
+                    if backup and not unreadable:
+                        info_by_num[num] = (*_i[:5], backup, *_i[6:])
             if reason is not None:
                 sentinels[num] = _DEAD_REASON_SENTINELS[reason]
             elif entry.auth_dead_strikes and entry.token_dead():
@@ -5101,7 +5143,9 @@ class ClaudeAccountSwitcher:
             for num in info_by_num
         }
 
-    def _slot_token_dead(self, num: str, email: str) -> bool:
+    def _slot_token_dead(
+        self, num: str, email: str, *, stored_copy_only: bool = False
+    ) -> bool:
         """Is this slot quarantined as refresh-token-dead, right now?
 
         The same question :meth:`_entry_token_dead` answers for the collectors,
@@ -5115,6 +5159,9 @@ class ClaudeAccountSwitcher:
         backup — as the import used to — leaves an active slot struck on its
         live generation unhealable, and that is the slot most likely to be
         quarantined in the first place.
+
+        ``stored_copy_only`` judges cswap's backup alone, as a seed source:
+        `cswap run` asks whether the copy it would seed from is struck.
         """
         # The org uuid is part of the row identity (UsageStore._matches
         # compares it for EQUALITY), so an empty one silently matches nothing:
@@ -5129,7 +5176,7 @@ class ClaudeAccountSwitcher:
         entry = self._usage_store.entries(ident).get(num)
         if entry is None:
             return False
-        is_active = num == self.current_account_number()
+        is_active = not stored_copy_only and num == self.current_account_number()
         # The backup is a stored source on BOTH paths — directly when idle,
         # and as _entry_token_dead's second source when active — and each
         # turns an unreadable one into "dead" by a different route: an empty

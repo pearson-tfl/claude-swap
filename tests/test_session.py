@@ -2750,7 +2750,7 @@ class TestAConsumedGrantIsNotSpentOnAProfileThatWonBootstrap:
         )
 
     def test_an_unverifiable_probe_does_not_destroy_the_profile(
-        self, manager, seeded_switcher, monkeypatch
+        self, manager, seeded_switcher, monkeypatch, refresh_rotates
     ):
         """`claude` unresolvable on PATH is not a verdict about the profile.
 
@@ -2783,7 +2783,7 @@ class TestAConsumedGrantIsNotSpentOnAProfileThatWonBootstrap:
         )
 
     def test_a_genuinely_invalid_profile_is_still_cleaned_up(
-        self, manager, seeded_switcher, monkeypatch
+        self, manager, seeded_switcher, monkeypatch, refresh_rotates
     ):
         """The control. A probe that RUNS and reports not-logged-in is a real
         verdict, and must still clean up — otherwise the test above passes on

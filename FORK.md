@@ -22,8 +22,8 @@ a rebase are the way to take later upstream work.
 
 ## What this fork changes
 
-Fixes D1–D6, one commit each. D1–D4 are the original four, each with its own
-test file; D5 and D6 were found later on this estate. Nothing else in the tool
+Fixes D1–D7, each a commit with its own review follow-ups. D1–D4 are the original four, each with its own
+test file; D5, D6 and D7 were found later on this estate. Nothing else in the tool
 is touched.
 
 ### D1 — upstream #206: the credential write followed the wrong profile
@@ -136,6 +136,9 @@ Files: `src/claude_swap/autoswitch.py`,
 
 ### D5 — a dead stored copy was reported as a dead account
 
+Amended by D7: an idle slot whose own folder holds a later login is no longer
+left at `stored_credential_stale`, and is fetched.
+
 Found on this estate, 16 September 2026, and not in the original four. `cswap
 --list --json` reported slot 4 (`bbconsult@jeptech.co.uk`) as
 `usageStatus: relogin_required` with both usage figures null, while the account
@@ -229,6 +232,53 @@ folder still skips it.
 
 Files: `src/claude_swap/session.py`, `tests/test_session.py`.
 
+### D7 — a dead stored copy never caught up from the slot's own folder
+
+Found on this estate, 20 November 2026 (John's ask that day: refresh all the
+cswap logins and keep them fresh; findings in the firstmate `acctfresh`
+report). Every slot showed `stored_credential_stale` for days while its own
+session folder held a working, newer login of the same account. Two defects.
+
+**The usage read stopped at the dead mark.** `_collect_usage_entries` checked
+the strike first, so the catch-up paths already behind it were never reached:
+adopting a quiet folder's newer login (`_adopt_session_credential`) and reading
+a live seat's login read-only. One dead copy stayed dead for good. Now a slot
+whose only fault is a struck stored copy (`_DEAD_STORED_ONLY`) first asks its
+folder: a quiet folder ahead of the copy is adopted into it; a live seat holding
+a later login of the same account is read read-only, never written or refreshed
+by cswap. Either way the strike is cleared and the slot is fetched. The folder
+must positively show it is signed in as the slot's account: an unreadable
+identity, which the fetch path tolerates, is refused here. Every refusal keeps
+both copies and the mark as they were: a folder signed in as another account
+or with no readable identity, an older or equal login, a stale marker, an
+unreadable copy, or lock contention. A live seat's later login clears the mark while cswap's copy stays dead
+until the seat exits and the copy is adopted; meanwhile any path that POSTs
+that copy (the active slot's recovery branch, `cswap run`'s refresh) earns a
+fresh strike, and `cswap run` refuses on it. This narrows D5's limit: for an idle slot whose folder
+holds a later login, cswap now has the view D5 said it lacked. No scheduled job
+is added; every existing read (`--list`, `--status`, the TUI, the menu bar,
+auto-switch) runs it.
+
+**`cswap run N` re-seeded a folder from a dead copy.** A folder judged invalid
+was re-seeded from cswap's stored copy (`setup_session` → `_bootstrap`) even
+when that copy was the one marked dead, and claude blanked it on its first
+refresh. On 20 November that signed folders 3 and 4 out eleven times. Now
+`setup_session` refuses before the refresh and the seed whenever the stored
+copy it would seed from is marked dead (`_slot_token_dead(...,
+stored_copy_only=True)`, so an active slot's struck live login does not
+block a healthy copy), and again when that refresh comes back
+`invalid_grant`: a live seat's later login clears the mark, so a copy can be
+dead and unmarked by the time its folder signs out. Either way it tells the
+user to sign in to the folder instead. A folder that is already signed in still launches on the reuse path.
+
+Two existing tests in `tests/test_session.py` never stubbed that refresh, so
+they sent a real refresh request with a fake token and continued past the
+refusal; they now take the file's own `refresh_rotates` fixture and stay
+offline. Their assertions are unchanged.
+
+Files: `src/claude_swap/switcher.py`, `src/claude_swap/session.py`,
+`tests/test_fork_session_catch_up.py`, `tests/test_session.py`.
+
 ## What this fork deliberately does not do
 
 **It does not port upstream PR #280, the Keychain trusted-app ACL pin.**
@@ -265,7 +315,7 @@ the `.claude.json`-versus-Keychain disagreement, fixed above.
     cd ~/Code/cswap
     uv run pytest -q
 
-2312 passed, 4 skipped at the head of `estate`. The suite is offline and never
+2338 passed, 4 skipped at the head of `estate`. The suite is offline and never
 touches the login keychain.
 
 ## Installing the fork
